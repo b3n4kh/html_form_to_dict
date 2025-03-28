@@ -1,89 +1,96 @@
-# -*- coding: utf-8 -*-
-from __future__ import absolute_import, division, unicode_literals, print_function
-
 import lxml.html
-import six
 from lxml.html import CheckboxValues, MultipleSelectOptions, InputElement
 
 
 class FormData(dict):
     def __init__(self, form_element):
-        self.frozen = False
-        for key, element in form_element.inputs.items():
-            skip, value = self.get_value_from_element(element)
-            if skip:
-                continue
-            self.__setitem__(key, value)
-        self.frozen = True
+        super().__init__()
+        self._frozen = False
         self.form = form_element
 
-    def get_value_from_element(self, element):
-        if isinstance(element, InputElement):
-            if element.attrib.get('type') == 'submit':
-                return True, None
-        value_obj = element.value
-        if value_obj is None:
-            return False, ''
-        if isinstance(value_obj, str):
-            value_obj = value_obj.lstrip('\n')
-        if isinstance(value_obj, CheckboxValues):
-            value_obj = [el.value for el in value_obj.group if el.value is not None]
-        if isinstance(value_obj, MultipleSelectOptions):
-            value_obj = list(value_obj)
-        return False, value_obj
+        for key, element in form_element.inputs.items():
+            skip, value = self._get_value_from_element(element)
+            if not skip:
+                self[key] = value
+
+        self._frozen = True
+
+    def _get_value_from_element(self, element):
+        if isinstance(element, InputElement) and element.attrib.get("type") == "submit":
+            return True, None
+
+        value = element.value
+
+        if value is None:
+            return False, ""
+        if isinstance(value, str):
+            value = value.lstrip("\n")
+        elif isinstance(value, CheckboxValues):
+            value = [el.value for el in value.group if el.value is not None]
+        elif isinstance(value, MultipleSelectOptions):
+            value = list(value)
+
+        return False, value
 
     def __setitem__(self, key, value):
-        if self.frozen and key not in self:
-            raise ValueError('Key %s is not in the dict. Available: %s' % (
-                key, self.keys()
-            ))
-        dict.__setitem__(self, key, value)
+        if self._frozen and key not in self:
+            available_keys = ", ".join(self.keys())
+            raise ValueError(
+                f"Key '{key}' is not in the dict. Available: {available_keys}"
+            )
+        super().__setitem__(key, value)
 
-    def update(self, other_dict):
-        for key, value in other_dict.items():
+    def update(self, other=None, **kwargs):
+        if other:
+            for key, value in other.items():
+                self[key] = value
+        for key, value in kwargs.items():
             self[key] = value
 
     def submit(self, client):
-        for method in ['get', 'post', 'delete']:
-            url = self.form.get('hx-' + method)
+        for method in ["get", "post", "delete"]:
+            url = self.form.get(f"hx-{method}")
             if url:
                 break
-        if not url:
-            url = self.form.get('action')
+        else:
+            url = self.form.get("action")
             if not url:
-                raise ValueError('Could not find an URL to send data to. Tried hx-get, hx-post, hx-delete and action')
-            method = self.form.get('method')
-            if not method:
-                method = 'get'
-            else:
-                method = method.lower()
+                raise ValueError(
+                    "Could not find an URL to send data to. Tried hx-get, hx-post, hx-delete and action."
+                )
+            method = self.form.get("method", "get").lower()
+
         return getattr(client, method)(url, self)
 
 
-def html_form_to_dict(html, index=0, name=None, id=None):
-    # type: () -> FormData
+def html_form_to_dict(
+    html: str, index: int = 0, name: str | None = None, id: str | None = None
+) -> FormData:
     """
-    return data of a form in `html`.
+    Return data of a form in the given `html`.
 
-    index: Return the data of the n'th form in the html. By default the first one.
-
-    name: Return the data of the form with the given name.
+    - index: Return the data of the n'th form in the html. Defaults to the first one.
+    - name: Return the data of the form with the given name.
+    - id: Return the data of the form with the given id.
     """
     tree = lxml.html.fromstring(html)
-    if name is not None:
-        found_names = []
-        for form in tree.iterfind('.//form'):
-            if form.get('name') == name:
-                return FormData(form)
-            found_names.append(form.get('name'))
-        raise ValueError('No form with name="{name}" found. Found forms with these names: {found_names}'.format(
-            name=name, found_names=found_names))
-    if id is not None:
-        found_ids = []
-        for form in tree.iterfind('.//form'):
-            if form.get('id') == id:
-                return FormData(form)
-            found_ids.append(form.get('id'))
-        raise ValueError('No form with id="{id}" found. Found forms with these ids: {found_ids}'.format(
-            id=id, found_ids=found_ids))
-    return FormData(tree.forms[index])
+
+    for attr_name, attr_value in (("name", name), ("id", id)):
+        if attr_value is not None:
+            found_values = []
+            for form in tree.iterfind(".//form"):
+                val = form.get(attr_name)
+                found_values.append(val)
+                if val == attr_value:
+                    return FormData(form)
+            raise ValueError(
+                f'No form with {attr_name}="{attr_value}" found. '
+                f"Found forms with these {attr_name}s: {found_values}"
+            )
+
+    try:
+        return FormData(tree.forms[index])
+    except IndexError as e:
+        raise ValueError(
+            f"No form at index {index}. Found {len(tree.forms)} forms."
+        ) from e
